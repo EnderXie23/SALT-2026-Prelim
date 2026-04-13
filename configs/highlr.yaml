@@ -1,0 +1,117 @@
+active_student_model: qwen25_coder_7b
+
+model_presets:
+  qwen25_coder_7b:
+    student_model_name_or_path: /data/xmy/models/Qwen2.5-Coder-7B-Instruct
+    use_quantization: false
+    quantization_bits: 4
+    torch_dtype: bfloat16
+    max_seq_len: 2048
+    train_hparams:
+      per_device_batch_size: 2
+      gradient_accumulation_steps: 8
+      target_modules:
+        - q_proj
+        - k_proj
+        - v_proj
+        - o_proj
+  qwen3_coder_30b_a3b:
+    student_model_name_or_path: /data/xmy/models/Qwen3-Coder-30B-A3B-Instruct
+    use_quantization: false
+    quantization_bits: 4
+    torch_dtype: bfloat16
+    max_seq_len: 32768
+    train_hparams:
+      per_device_batch_size: 1
+      gradient_accumulation_steps: 16
+      target_modules:
+        - q_proj
+        - k_proj
+        - v_proj
+        - o_proj
+
+teacher_vllm_base_url: http://localhost:8000/v1
+teacher_model_name: Qwen/Qwen2.5-14B-Instruct
+
+raw_data_dir: data_raw
+split_data_dir: data_splits
+results_dir: results
+
+use_quantization: false
+quantization_bits: 4
+torch_dtype: bfloat16
+max_seq_len: 2048
+random_seed: 42
+
+dataset_sources:
+  finqa:
+    local_path: data_raw/finqa
+    hf_candidates:
+      - dreamerdeo/finqa
+      - Exploration-Lab/FinQA
+      - ibm/finqa
+    split_map:
+      train: train
+      validation: validation
+      test: test
+  mbpp:
+    local_path: data_raw/mbpp
+    preferred_config: full
+    hf_candidates:
+      - mbpp
+    split_map:
+      train: train
+      validation: validation
+      test: test
+      prompt: prompt
+  humaneval:
+    local_path: data_raw/humaneval
+    preferred_config: openai_humaneval
+    hf_candidates:
+      - openai/openai_humaneval
+      - openai_humaneval
+      - human_eval
+    split_map:
+      test: test
+
+split_sizes:
+  finqa_forget_train: 800
+  finqa_tutor_train: 150
+  finqa_test: 100
+  mbpp_retain_train: 800
+  humaneval_test: 40
+
+train_hparams:
+  lora_rank: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  learning_rate: 2.0e-5
+  recovery_learning_rate: 2.0e-5
+  lambda_forget: 1.0
+  retain_loss_weight: 1.0
+  forget_loss_weight: 1.0
+  max_steps: 600
+  recovery_max_steps: 300
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 8
+  eval_every_steps: 50
+  save_every_steps: 100
+  weight_decay: 0.0
+  warmup_ratio: 0.03
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+
+decode_hparams:
+  temperature: 0.0
+  top_p: 1.0
+  max_new_tokens: 1024
+  teacher_max_new_tokens: 8192
+  do_sample: false
+
+tutoring:
+  max_questions: 100
+  max_turns_per_question: 3
+  context_examples: 2

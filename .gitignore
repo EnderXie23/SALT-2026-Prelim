@@ -1,0 +1,9 @@
+# Datasets
+data_raw/
+data_splits/
+
+# Result files
+results/
+
+# Slides
+slides/
