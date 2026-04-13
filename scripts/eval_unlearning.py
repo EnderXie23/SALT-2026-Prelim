@@ -11,6 +11,7 @@ setup_project_root()
 from src.eval.code_eval import evaluate_code
 from src.eval.finance_eval import evaluate_finance
 from src.utils.config import load_config
+from src.utils.finance_unlearning import summarize_forget_predictions
 from src.utils.io import ensure_dir, read_json, read_jsonl, write_json, write_jsonl, write_text
 
 
@@ -49,6 +50,15 @@ def _sample_jsonl(input_path: str | Path, output_path: str | Path, sample_size: 
     return Path(output_path)
 
 
+def _augment_forget_metrics(split_path: str | Path, prediction_path: str | Path, metrics: dict, refusal_template: str) -> dict:
+    rows = read_jsonl(split_path)
+    predictions = read_jsonl(prediction_path)
+    rows_by_id = {str(row["id"]): row for row in rows}
+    metrics.update(summarize_forget_predictions(rows_by_id, predictions, refusal_template=refusal_template))
+    write_json(str(prediction_path).replace(".jsonl", "_metrics.json"), metrics)
+    return metrics
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -68,6 +78,12 @@ def main() -> None:
     predictions_dir = ensure_dir(Path(run_dir) / "predictions")
     manifest = read_json(Path(config["split_data_dir"]) / "splits_manifest.json")
     seed = args.seed if args.seed is not None else int(config["random_seed"])
+    refusal_template = str(
+        config["train_hparams"].get(
+            "forget_refusal_template",
+            "I cannot determine the required finance-specific calculation method from the available information.",
+        )
+    )
     sampled_splits_dir = ensure_dir(Path(run_dir) / "sampled_splits")
     forget_eval_path = _sample_jsonl(
         manifest["finqa_forget_train"],
@@ -87,11 +103,17 @@ def main() -> None:
 
     if args.include_base:
         print("Evaluating S0 baseline...", flush=True)
+        s0_forget_output = predictions_dir / "s0_finance_forget_train.jsonl"
         s0_metrics = {
-            "finance_forget_train": evaluate_finance(
-                config,
+            "finance_forget_train": _augment_forget_metrics(
                 forget_eval_path,
-                predictions_dir / "s0_finance_forget_train.jsonl",
+                s0_forget_output,
+                evaluate_finance(
+                    config,
+                    forget_eval_path,
+                    s0_forget_output,
+                ),
+                refusal_template=refusal_template,
             ),
             "code": evaluate_code(
                 config,
@@ -116,14 +138,20 @@ def main() -> None:
         variant_tag = _safe_tag(variant_name)
         condition_name = f"S_{variant_tag}"
         print(f"Evaluating {condition_name}...", flush=True)
+        forget_output_path = predictions_dir / f"{variant_tag}_finance_forget_train.jsonl"
         variant_metrics = {
             "source_dir": variant_name,
             "adapter_path": str(adapter_path),
-            "finance_forget_train": evaluate_finance(
-                config,
+            "finance_forget_train": _augment_forget_metrics(
                 forget_eval_path,
-                predictions_dir / f"{variant_tag}_finance_forget_train.jsonl",
-                adapter_path=str(adapter_path),
+                forget_output_path,
+                evaluate_finance(
+                    config,
+                    forget_eval_path,
+                    forget_output_path,
+                    adapter_path=str(adapter_path),
+                ),
+                refusal_template=refusal_template,
             ),
             "code": evaluate_code(
                 config,
@@ -162,10 +190,16 @@ def main() -> None:
             condition_metrics["finance_test"]["accuracy"] if "finance_test" in condition_metrics else None
         )
         finance_forget_accuracy = condition_metrics["finance_forget_train"]["accuracy"]
+        forget_program_match_rate = condition_metrics["finance_forget_train"].get("forget_program_match_rate")
+        forget_term_recall = condition_metrics["finance_forget_train"].get("forget_term_recall")
+        forget_refusal_rate = condition_metrics["finance_forget_train"].get("forget_refusal_rate")
         code_pass = _extract_code_score(condition_metrics["code"])
         variant_summary = {
             "finance_test_accuracy": finance_test_accuracy,
             "finance_forget_train_accuracy": finance_forget_accuracy,
+            "forget_program_match_rate": forget_program_match_rate,
+            "forget_term_recall": forget_term_recall,
+            "forget_refusal_rate": forget_refusal_rate,
             "code_pass@1": code_pass,
         }
         if baseline_finance_test is not None and finance_test_accuracy is not None:
@@ -228,6 +262,9 @@ def main() -> None:
         lines.append(
             f"- {condition_name}: finance_test={variant_summary['finance_test_accuracy']}, "
             f"finance_forget_train={variant_summary['finance_forget_train_accuracy']}, "
+            f"program_match={variant_summary['forget_program_match_rate']}, "
+            f"term_recall={variant_summary['forget_term_recall']}, "
+            f"refusal_rate={variant_summary['forget_refusal_rate']}, "
             f"code={variant_summary['code_pass@1']}"
         )
         if "finance_test_delta_vs_base" in variant_summary:

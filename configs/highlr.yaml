@@ -87,7 +87,19 @@ train_hparams:
   lora_dropout: 0.05
   learning_rate: 2.0e-5
   recovery_learning_rate: 2.0e-5
-  lambda_forget: 1.0
+  lambda_forget: 2.0
+  forget_objective: method_term_aux
+  forget_loss_margin: 1.5
+  forget_loss_estimate_batches: 32
+  method_term_penalty_mode: threshold_hinge
+  lambda_program: 2.0
+  lambda_terms: 1.0
+  lambda_refusal: 0.5
+  program_loss_margin: 1.5
+  term_loss_margin: 0.75
+  refusal_loss_margin: 0.0
+  forget_refusal_template: I cannot determine the required finance-specific calculation method from the available information.
+  term_extraction_mode: heuristic
   retain_loss_weight: 1.0
   forget_loss_weight: 1.0
   max_steps: 600

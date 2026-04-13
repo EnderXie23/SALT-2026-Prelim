@@ -14,7 +14,11 @@ from src.utils.io import read_jsonl
 class TrainSample:
     sample_id: str
     source: str
+    prompt: str
+    target: str
     text: str
+    metadata: dict[str, Any]
+    forget_supervision: dict[str, Any] | None = None
 
 
 class SFTDataset(Dataset):
@@ -22,7 +26,17 @@ class SFTDataset(Dataset):
         self.samples: list[TrainSample] = []
         for row in rows:
             text = build_chat_prompt(tokenizer, prompt=row["prompt"], target=row["target"], system_prompt=system_prompt)
-            self.samples.append(TrainSample(sample_id=row["id"], source=source, text=text))
+            self.samples.append(
+                TrainSample(
+                    sample_id=row["id"],
+                    source=source,
+                    prompt=row["prompt"],
+                    target=row["target"],
+                    text=text,
+                    metadata=row.get("metadata", {}),
+                    forget_supervision=row.get("forget_supervision"),
+                )
+            )
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -60,6 +74,10 @@ class DataCollator:
             "labels": labels,
             "sources": [sample.source for sample in batch],
             "sample_ids": [sample.sample_id for sample in batch],
+            "prompts": [sample.prompt for sample in batch],
+            "targets": [sample.target for sample in batch],
+            "metadata": [sample.metadata for sample in batch],
+            "forget_supervision": [sample.forget_supervision for sample in batch],
         }
 
 
@@ -74,4 +92,8 @@ def move_batch_to_device(batch: dict[str, Any], device: torch.device) -> dict[st
         "labels": batch["labels"].to(device),
         "sources": batch["sources"],
         "sample_ids": batch["sample_ids"],
+        "prompts": batch["prompts"],
+        "targets": batch["targets"],
+        "metadata": batch["metadata"],
+        "forget_supervision": batch["forget_supervision"],
     }

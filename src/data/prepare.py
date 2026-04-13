@@ -7,6 +7,7 @@ from typing import Any, Iterable
 from datasets import load_dataset
 
 from src.data.download import download_dataset_from_config
+from src.utils.finance_unlearning import build_forget_supervision
 from src.utils.io import read_json, read_jsonl, write_json, write_jsonl
 
 
@@ -104,6 +105,7 @@ def _load_or_refresh_manifest(raw_dir: Path, dataset_name: str, config: dict[str
 
 def normalize_finqa(records: list[dict[str, Any]], split_name: str) -> list[dict[str, Any]]:
     items = []
+    refusal_template = "I cannot determine the required finance-specific calculation method from the available information."
     for i, record in enumerate(records):
         qa = record.get("qa") if isinstance(record.get("qa"), dict) else {}
         question = _pick(qa, ["question"]) or _pick(record, ["question", "query", "problem", "prompt"])
@@ -124,6 +126,7 @@ def normalize_finqa(records: list[dict[str, Any]], split_name: str) -> list[dict
                 "domain": "finance",
                 "prompt": prompt,
                 "target": str(answer),
+                "forget_supervision": build_forget_supervision(record, refusal_template=refusal_template),
                 "metadata": record,
             }
         )
