@@ -1,3 +1,6 @@
+__pycache__/
+*.pyc
+
 # Datasets
 data_raw/
 data_splits/
