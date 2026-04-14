@@ -308,29 +308,23 @@ def train_unlearning(config: dict[str, Any], forget_path: str, retain_path: str,
         retain_batch = move_batch_to_device(retain_batch, model.device)
         forget_batch = move_batch_to_device(forget_batch, model.device)
 
-        retain_outputs = model(input_ids=retain_batch["input_ids"], attention_mask=retain_batch["attention_mask"])
-        retain_loss = _sample_losses(retain_outputs.logits, retain_batch["labels"]).mean()
+        if forget_objective == "method_term_aux":
+            retain_outputs = model(input_ids=retain_batch["input_ids"], attention_mask=retain_batch["attention_mask"])
+            retain_loss = _sample_losses(retain_outputs.logits, retain_batch["labels"]).mean()
+            (retain_weight * retain_loss / grad_accum).backward()
+            del retain_outputs
 
-        forget_outputs = model(input_ids=forget_batch["input_ids"], attention_mask=forget_batch["attention_mask"])
-        forget_loss = _sample_losses(forget_outputs.logits, forget_batch["labels"]).mean()
+            with torch.no_grad():
+                forget_outputs = model(input_ids=forget_batch["input_ids"], attention_mask=forget_batch["attention_mask"])
+                forget_loss = _sample_losses(forget_outputs.logits, forget_batch["labels"]).mean()
+            del forget_outputs
 
-        program_loss = torch.zeros((), device=forget_loss.device)
-        term_loss = torch.zeros((), device=forget_loss.device)
-        refusal_loss = torch.zeros((), device=forget_loss.device)
-
-        if forget_objective == "gradient_ascent":
-            forget_penalty = -forget_loss
-        elif forget_objective == "threshold_hinge":
-            if target_forget_loss is None:
-                raise RuntimeError("threshold_hinge objective requires a target_forget_loss.")
-            forget_penalty = F.relu(torch.tensor(target_forget_loss, device=forget_loss.device, dtype=forget_loss.dtype) - forget_loss)
-        elif forget_objective == "method_term_aux":
+            program_loss = torch.zeros((), device=model.device)
+            term_loss = torch.zeros((), device=model.device)
+            refusal_loss = torch.zeros((), device=model.device)
             penalty_mode = str(method_term_meta.get("method_term_penalty_mode", "gradient_ascent"))
             program_prompts = [build_program_forget_prompt(prompt) for prompt in forget_batch["prompts"]]
             program_targets = [item["program_target"] for item in forget_batch["forget_supervision"]]
-            term_prompts = [build_terms_forget_prompt(prompt) for prompt in forget_batch["prompts"]]
-            term_targets = [item["terms_target"] for item in forget_batch["forget_supervision"]]
-            refusal_targets = [item["refusal_target"] for item in forget_batch["forget_supervision"]]
             program_loss = _aux_target_loss(
                 model,
                 tokenizer,
@@ -339,6 +333,17 @@ def train_unlearning(config: dict[str, Any], forget_path: str, retain_path: str,
                 system_prompt=system_prompt,
                 max_length=config["max_seq_len"],
             )
+            program_penalty = _text_penalty(
+                program_loss,
+                penalty_mode,
+                target_value=float(method_term_meta["target_program_loss"]) if "target_program_loss" in method_term_meta else None,
+            )
+            (forget_weight * lambda_program * program_penalty / grad_accum).backward()
+            program_penalty_value = program_penalty.detach()
+            del program_penalty
+
+            term_prompts = [build_terms_forget_prompt(prompt) for prompt in forget_batch["prompts"]]
+            term_targets = [item["terms_target"] for item in forget_batch["forget_supervision"]]
             term_loss = _aux_target_loss(
                 model,
                 tokenizer,
@@ -347,6 +352,16 @@ def train_unlearning(config: dict[str, Any], forget_path: str, retain_path: str,
                 system_prompt=system_prompt,
                 max_length=config["max_seq_len"],
             )
+            term_penalty = _text_penalty(
+                term_loss,
+                penalty_mode,
+                target_value=float(method_term_meta["target_term_loss"]) if "target_term_loss" in method_term_meta else None,
+            )
+            (forget_weight * lambda_terms * term_penalty / grad_accum).backward()
+            term_penalty_value = term_penalty.detach()
+            del term_penalty
+
+            refusal_targets = [item["refusal_target"] for item in forget_batch["forget_supervision"]]
             refusal_loss = _aux_target_loss(
                 model,
                 tokenizer,
@@ -355,25 +370,32 @@ def train_unlearning(config: dict[str, Any], forget_path: str, retain_path: str,
                 system_prompt=system_prompt,
                 max_length=config["max_seq_len"],
             )
-            program_penalty = _text_penalty(
-                program_loss,
-                penalty_mode,
-                target_value=float(method_term_meta["target_program_loss"]) if "target_program_loss" in method_term_meta else None,
-            )
-            term_penalty = _text_penalty(
-                term_loss,
-                penalty_mode,
-                target_value=float(method_term_meta["target_term_loss"]) if "target_term_loss" in method_term_meta else None,
-            )
-            forget_penalty = lambda_program * program_penalty + lambda_terms * term_penalty + lambda_refusal * refusal_loss
+            (forget_weight * lambda_refusal * refusal_loss / grad_accum).backward()
+            forget_penalty = lambda_program * program_penalty_value + lambda_terms * term_penalty_value + lambda_refusal * refusal_loss.detach()
+            loss = retain_weight * retain_loss.detach() + forget_weight * forget_penalty
         else:
-            raise RuntimeError(f"Unexpected forget objective: {forget_objective}")
+            retain_outputs = model(input_ids=retain_batch["input_ids"], attention_mask=retain_batch["attention_mask"])
+            retain_loss = _sample_losses(retain_outputs.logits, retain_batch["labels"]).mean()
 
-        if forget_objective == "method_term_aux":
-            loss = retain_weight * retain_loss + forget_weight * forget_penalty
-        else:
+            forget_outputs = model(input_ids=forget_batch["input_ids"], attention_mask=forget_batch["attention_mask"])
+            forget_loss = _sample_losses(forget_outputs.logits, forget_batch["labels"]).mean()
+
+            program_loss = torch.zeros((), device=forget_loss.device)
+            term_loss = torch.zeros((), device=forget_loss.device)
+            refusal_loss = torch.zeros((), device=forget_loss.device)
+
+            if forget_objective == "gradient_ascent":
+                forget_penalty = -forget_loss
+            elif forget_objective == "threshold_hinge":
+                if target_forget_loss is None:
+                    raise RuntimeError("threshold_hinge objective requires a target_forget_loss.")
+                forget_penalty = F.relu(
+                    torch.tensor(target_forget_loss, device=forget_loss.device, dtype=forget_loss.dtype) - forget_loss
+                )
+            else:
+                raise RuntimeError(f"Unexpected forget objective: {forget_objective}")
             loss = retain_weight * retain_loss + lambda_forget * forget_weight * forget_penalty
-        (loss / grad_accum).backward()
+            (loss / grad_accum).backward()
 
         if step % grad_accum == 0:
             optimizer.step()
